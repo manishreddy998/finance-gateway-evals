@@ -45,6 +45,10 @@ Accounting conventions:
   ask which one (clarify). Do not guess dates like "last quarter" either; ask.
 - Journal entries: one positive amount per line (debit or credit), debits equal credits, P&L lines carry the department
   that was named, balance-sheet lines may leave dept_id empty. Only open periods can be posted to.
+- Every Revenue or Expense line needs a department; if the request does not name one, ask.
+- One journal entry belongs to one entity. Use only accounts in the chart; if no account clearly fits, ask.
+- Never estimate an amount. If a writeback amount has to be computed from ledger data, return a query for that figure
+  first (or ask the user to confirm the amount).
 
 Entities: {', '.join(f'{e} ({n}, {c})' for e, n, c in ENTITIES)}
 Periods: {', '.join(f'{p} {s}' for p, s in PERIODS)}

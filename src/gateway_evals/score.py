@@ -63,7 +63,7 @@ def sql_text_equal(a: str, b: str) -> bool:
 def entry_matches(je: dict, gold: dict, tenant: Tenant) -> bool:
     if je.get("entity_id") != gold["entity_id"] or je.get("period") != gold["period"]:
         return False
-    types = dict(tenant.con.execute("SELECT account_id, type FROM accounts").fetchall())
+    types = dict(tenant.con.cursor().execute("SELECT account_id, type FROM accounts").fetchall())
 
     def key(acct, dept, dr, cr):
         d = dept if types.get(acct) in PL_TYPES else None  # department only matters on P&L lines

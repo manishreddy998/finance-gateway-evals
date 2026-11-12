@@ -46,7 +46,7 @@ def run_read(tenant: Tenant, sql: str) -> ReadResult:
     if not re.match(r"^\s*(select|with)\b", sql, re.I) or ";" in sql or FORBIDDEN.search(sql):
         return ReadResult(False, error="rejected: only a single read-only SELECT is allowed")
     try:
-        cur = tenant.con.execute(sql)
+        cur = tenant.con.cursor().execute(sql)
         rows = cur.fetchmany(MAX_ROWS + 1)
         cols = [d[0] for d in cur.description]
     except Exception as exc:  # duckdb raises many specific types; surface the message to the caller
@@ -58,7 +58,7 @@ def run_read(tenant: Tenant, sql: str) -> ReadResult:
 
 def validate_entry(tenant: Tenant, je: JournalEntry) -> list[str]:
     """Return the list of rule violations (empty = postable)."""
-    c = tenant.con
+    c = tenant.con.cursor()  # own cursor per call: the gateway serves concurrent requests
     errors = []
     if not c.execute("SELECT 1 FROM entities WHERE entity_id = ?", [je.entity_id]).fetchone():
         errors.append(f"unknown entity {je.entity_id}")

@@ -106,5 +106,53 @@ CASES = [
          entry=dict(entity_id="CA01", period="2026-06", lines=[("1100", None, 2400, 0), ("4100", "SAL", 0, 2400)])),
 ]
 
+HARD = [
+    # ---------------- hard tier: the traps finance users actually hit ----------------
+    dict(id="h01", type=Q, shape="aging", expect="set",
+         text="AR aging for CA01 as of 2026-06-30: outstanding amount (amount minus paid) in buckets 'current' (not yet due), '1-30', '31-60' and '61+' days past due. Only unpaid balances.",
+         gold="SELECT CASE WHEN DATE '2026-06-30' - due_date <= 0 THEN 'current' WHEN DATE '2026-06-30' - due_date <= 30 THEN '1-30' WHEN DATE '2026-06-30' - due_date <= 60 THEN '31-60' ELSE '61+' END AS bucket, SUM(amount - amount_paid) FROM ar_invoices WHERE entity_id='CA01' AND amount_paid < amount GROUP BY bucket"),
+    dict(id="h02", type=Q, shape="subledger", expect="scalar",
+         text="Which customer has the oldest unpaid invoice for US01? Customer name only.",
+         gold="SELECT c.name FROM ar_invoices i JOIN customers c USING (customer_id) WHERE i.entity_id='US01' AND i.amount_paid < i.amount ORDER BY i.invoice_date, i.invoice_id LIMIT 1"),
+    dict(id="h03", type=Q, shape="filter", expect="scalar",
+         text="Year-to-date (January through May 2026) operating expenses for US01 Engineering, excluding payroll (Salaries and Wages).",
+         gold="SELECT SUM(debit - credit) FROM gl_lines WHERE entity_id='US01' AND dept_id='ENG' AND account_id LIKE '6%' AND account_id <> '6000' AND period BETWEEN '2026-01' AND '2026-05'"),
+    dict(id="h04", type=Q, shape="average-trap", expect="scalar",
+         text="What was CA01's average monthly revenue in Q2 2026?",
+         gold="SELECT SUM(g.credit - g.debit) / 3 FROM gl_lines g JOIN accounts a USING (account_id) WHERE a.type='Revenue' AND g.entity_id='CA01' AND g.period BETWEEN '2026-04' AND '2026-06'"),
+    dict(id="h05", type=Q, shape="top-n", expect="ordered",
+         text="What was the largest single journal entry by total debits that US01 posted in Q1 2026? Give the journal id and its total.",
+         gold="SELECT journal_id, SUM(debit) t FROM gl_lines WHERE entity_id='US01' AND period BETWEEN '2026-01' AND '2026-03' GROUP BY journal_id ORDER BY t DESC LIMIT 1"),
+    dict(id="h06", type=Q, shape="ratio", expect="scalar", tol=0.1,
+         text="Month-over-month percent change in total revenue for US01 from April to May 2026?",
+         gold="SELECT ROUND((SUM(CASE WHEN period='2026-05' THEN credit-debit END) - SUM(CASE WHEN period='2026-04' THEN credit-debit END)) / SUM(CASE WHEN period='2026-04' THEN credit-debit END) * 100, 2) FROM gl_lines WHERE entity_id='US01' AND account_id IN ('4000','4100') AND period IN ('2026-04','2026-05')"),
+    dict(id="h07", type=Q, shape="division", expect="scalar",
+         text="How many vendors billed CA01 more than $3,000 in every single month of H1 2026 (monthly total per vendor)?",
+         gold="SELECT COUNT(*) FROM (SELECT vendor_id FROM (SELECT vendor_id, strftime(bill_date, '%Y-%m') m, SUM(amount) s FROM ap_bills WHERE entity_id='CA01' AND bill_date BETWEEN '2026-01-01' AND '2026-06-30' GROUP BY 1, 2) WHERE s > 3000 GROUP BY vendor_id HAVING COUNT(*) = 6)"),
+    dict(id="h08", type=Q, shape="ratio", expect="scalar", tol=0.1,
+         text="What percent of US01's AR invoices are paid in full?",
+         gold="SELECT ROUND(100.0 * SUM(CASE WHEN amount_paid >= amount THEN 1 ELSE 0 END) / COUNT(*), 2) FROM ar_invoices WHERE entity_id='US01'"),
+    dict(id="h09", type=Q, shape="ratio", expect="scalar", tol=0.1,
+         text="For CA01, compute DSO as AR outstanding (amount minus paid, all invoices dated on or before 2026-06-30) divided by Q2 2026 revenue, times 91 days.",
+         gold="SELECT ROUND((SELECT SUM(amount - amount_paid) FROM ar_invoices WHERE entity_id='CA01' AND invoice_date <= DATE '2026-06-30') / (SELECT SUM(g.credit - g.debit) FROM gl_lines g JOIN accounts a USING (account_id) WHERE a.type='Revenue' AND g.entity_id='CA01' AND g.period BETWEEN '2026-04' AND '2026-06') * 91, 2)"),
+    dict(id="h10", type=W, shape="reversal", accept=["writeback"],
+         text="Reverse a $12,500 legal accrual for CA01 Administration in June 2026: debit Accrued Liabilities, credit Legal and Professional Fees.",
+         entry=dict(entity_id="CA01", period="2026-06", lines=[("2100", None, 12500, 0), ("6500", "ADM", 0, 12500)])),
+    dict(id="h11", type=W, shape="split", accept=["writeback"],
+         text="Record $6,000 of software subscriptions for CA01 in May 2026 split equally between Engineering and Operations, paid from Cash.",
+         entry=dict(entity_id="CA01", period="2026-05", lines=[("6200", "ENG", 3000, 0), ("6200", "OPS", 3000, 0), ("1000", None, 0, 6000)])),
+    dict(id="h12", type=W, shape="missing-dept", accept=["clarify"],
+         text="Accrue $3,000 of travel for CA01 in May 2026, credit Accrued Liabilities."),
+    dict(id="h13", type=W, shape="cross-entity", accept=["clarify", "refuse"],
+         text="Post one $1,200 office supplies accrual covering both CA01 and US01 Administration for June 2026."),
+    dict(id="h14", type=W, shape="no-fitting-account", accept=["clarify", "refuse"],
+         text="Record a $500 bank fee for US01 Administration in May 2026, paid from Cash."),
+    dict(id="h15", type=W, shape="computed-amount", accept=["query", "clarify"],
+         text="Accrue an agency fee equal to 10% of US01's May 2026 Marketing and Advertising spend, in June 2026 for MKT, credit Accrued Liabilities."),
+    dict(id="h16", type=Q, shape="cross-entity-total", accept=["clarify", "query"],
+         text="What was combined revenue for CA01 and US01 in Q1 2026, in one number?"),
+]
+CASES += HARD
+
 for c in CASES:
     c.setdefault("accept", ["query"] if c["type"] == Q else ["writeback"])
