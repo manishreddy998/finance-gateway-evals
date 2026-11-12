@@ -1,0 +1,110 @@
+"""The regression suite. Three action types, matching what the gateway does in production:
+
+- query:     natural language -> SQL. Graded by EXECUTING it on both tenants, never by comparing SQL text.
+- writeback: natural language -> journal entry. Graded on intent (right lines) AND on whether the
+             gateway would accept it.
+- refusal / clarification: the right answer is to not act. Tool selection is graded on every case.
+
+`shape` tags let results be sliced by query shape, which is where averages hide the expensive tail.
+"""
+from __future__ import annotations
+
+Q, W = "query", "writeback"
+
+CASES = [
+    # ---------------- query generation ----------------
+    dict(id="q01", type=Q, shape="filter", expect="scalar",
+         text="What was product revenue for CA01 in March 2026?",
+         gold="SELECT SUM(credit - debit) FROM gl_lines WHERE entity_id='CA01' AND period='2026-03' AND account_id='4000'"),
+    dict(id="q02", type=Q, shape="join", expect="scalar",
+         text="Total revenue for US01 in Q2 2026?",
+         gold="SELECT SUM(g.credit - g.debit) FROM gl_lines g JOIN accounts a USING (account_id) WHERE a.type='Revenue' AND g.entity_id='US01' AND g.period BETWEEN '2026-04' AND '2026-06'"),
+    dict(id="q03", type=Q, shape="filter", expect="scalar",
+         text="Total operating expenses (6000-series accounts) for CA01 in April 2026.",
+         gold="SELECT SUM(debit - credit) FROM gl_lines WHERE entity_id='CA01' AND period='2026-04' AND account_id LIKE '6%'"),
+    dict(id="q04", type=Q, shape="group", expect="set",
+         text="Break down US01 operating expenses (6000-series) by department for May 2026.",
+         gold="SELECT dept_id, SUM(debit - credit) FROM gl_lines WHERE entity_id='US01' AND period='2026-05' AND account_id LIKE '6%' GROUP BY dept_id"),
+    dict(id="q05", type=Q, shape="ratio", expect="scalar", tol=0.1,
+         text="What was gross margin percent for CA01 in Q1 2026? (revenue minus COGS, over revenue)",
+         gold="WITH x AS (SELECT SUM(CASE WHEN a.type='Revenue' THEN g.credit-g.debit ELSE 0 END) rev, SUM(CASE WHEN g.account_id='5000' THEN g.debit-g.credit ELSE 0 END) cogs FROM gl_lines g JOIN accounts a USING (account_id) WHERE g.entity_id='CA01' AND g.period BETWEEN '2026-01' AND '2026-03') SELECT ROUND((rev-cogs)/rev*100, 2) FROM x"),
+    dict(id="q06", type=Q, shape="ratio", expect="scalar",
+         text="Net income for US01 in April 2026?",
+         gold="SELECT SUM(CASE WHEN a.type='Revenue' THEN g.credit-g.debit WHEN a.type='Expense' THEN -(g.debit-g.credit) ELSE 0 END) FROM gl_lines g JOIN accounts a USING (account_id) WHERE g.entity_id='US01' AND g.period='2026-04'"),
+    dict(id="q07", type=Q, shape="top-n", expect="scalar",
+         text="Which department had the highest operating expenses (6000-series) for CA01 in Q2 2026? Give the department code.",
+         gold="SELECT dept_id FROM gl_lines WHERE entity_id='CA01' AND period BETWEEN '2026-04' AND '2026-06' AND account_id LIKE '6%' GROUP BY dept_id ORDER BY SUM(debit-credit) DESC LIMIT 1"),
+    dict(id="q08", type=Q, shape="top-n", expect="ordered",
+         text="Top 3 vendors by total billed amount for CA01 in H1 2026, with amounts.",
+         gold="SELECT v.name, SUM(b.amount) amt FROM ap_bills b JOIN vendors v USING (vendor_id) WHERE b.entity_id='CA01' AND b.bill_date BETWEEN '2026-01-01' AND '2026-06-30' GROUP BY v.name ORDER BY amt DESC LIMIT 3"),
+    dict(id="q09", type=Q, shape="budget", expect="scalar",
+         text="For US01 in March 2026, what was the variance (actual minus budget) on Marketing and Advertising for the MKT department?",
+         gold="SELECT (SELECT SUM(debit-credit) FROM gl_lines WHERE entity_id='US01' AND period='2026-03' AND account_id='6400' AND dept_id='MKT') - (SELECT SUM(amount) FROM budgets WHERE entity_id='US01' AND period='2026-03' AND account_id='6400' AND dept_id='MKT')"),
+    dict(id="q10", type=Q, shape="subledger", expect="scalar",
+         text="How much do we owe on open (unpaid) AP bills for US01?",
+         gold="SELECT SUM(amount) FROM ap_bills WHERE entity_id='US01' AND status='open'"),
+    dict(id="q11", type=Q, shape="subledger", expect="set",
+         text="List outstanding AR balances (amount minus amount paid) by customer name for CA01, only customers with a balance.",
+         gold="SELECT c.name, SUM(i.amount - i.amount_paid) bal FROM ar_invoices i JOIN customers c USING (customer_id) WHERE i.entity_id='CA01' GROUP BY c.name HAVING SUM(i.amount - i.amount_paid) > 0"),
+    dict(id="q12", type=Q, shape="subledger", expect="scalar",
+         text="How many CA01 invoices were overdue and not fully paid as of 2026-06-30?",
+         gold="SELECT COUNT(*) FROM ar_invoices WHERE entity_id='CA01' AND due_date < DATE '2026-06-30' AND amount_paid < amount"),
+    dict(id="q13", type=Q, shape="time-series", expect="set",
+         text="Software Subscriptions spend by month for CA01, January to June 2026.",
+         gold="SELECT period, SUM(debit-credit) FROM gl_lines WHERE entity_id='CA01' AND account_id='6200' AND period BETWEEN '2026-01' AND '2026-06' GROUP BY period"),
+    dict(id="q14", type=Q, shape="time-series", expect="scalar",
+         text="Which 6000-series expense account grew the most in dollars from April to May 2026 for US01? Give the account id.",
+         gold="WITH m AS (SELECT account_id, SUM(CASE WHEN period='2026-05' THEN debit-credit ELSE 0 END) - SUM(CASE WHEN period='2026-04' THEN debit-credit ELSE 0 END) d FROM gl_lines WHERE entity_id='US01' AND account_id LIKE '6%' AND period IN ('2026-04','2026-05') GROUP BY account_id) SELECT account_id FROM m ORDER BY d DESC LIMIT 1"),
+    dict(id="q15", type=Q, shape="filter", expect="scalar",
+         text="What was the net movement in the Cash account (1000) for CA01 over Q1 2026?",
+         gold="SELECT SUM(debit - credit) FROM gl_lines WHERE entity_id='CA01' AND account_id='1000' AND period BETWEEN '2026-01' AND '2026-03'"),
+    dict(id="q16", type=Q, shape="subledger", expect="scalar",
+         text="What is the average invoice amount for Harbor Retail in US01?",
+         gold="SELECT AVG(i.amount) FROM ar_invoices i JOIN customers c USING (customer_id) WHERE c.name='Harbor Retail' AND i.entity_id='US01'"),
+    dict(id="q17", type=Q, shape="budget", expect="scalar", tol=0.1,
+         text="What percent of its H1 2026 budget for Legal and Professional Fees has CA01 used?",
+         gold="SELECT ROUND((SELECT SUM(debit-credit) FROM gl_lines WHERE entity_id='CA01' AND account_id='6500' AND period BETWEEN '2026-01' AND '2026-06') / (SELECT SUM(amount) FROM budgets WHERE entity_id='CA01' AND account_id='6500' AND period BETWEEN '2026-01' AND '2026-06') * 100, 2)"),
+    dict(id="q18", type=Q, shape="filter", expect="scalar",
+         text="How many journal entries did US01 post in June 2026?",
+         gold="SELECT COUNT(DISTINCT journal_id) FROM gl_lines WHERE entity_id='US01' AND period='2026-06'"),
+    dict(id="q19", type=Q, shape="ratio", expect="scalar", tol=0.1,
+         text="What share of US01 total revenue in H1 2026 came from Services Revenue, as a percent?",
+         gold="SELECT ROUND(SUM(CASE WHEN account_id='4100' THEN credit-debit ELSE 0 END) / SUM(credit-debit) * 100, 2) FROM gl_lines WHERE entity_id='US01' AND account_id IN ('4000','4100') AND period BETWEEN '2026-01' AND '2026-06'"),
+    dict(id="q20", type=Q, shape="budget", expect="set",
+         text="Which departments were over budget on 6000-series operating expenses for CA01 in April 2026? Department codes only.",
+         gold="WITH a AS (SELECT dept_id, SUM(debit-credit) act FROM gl_lines WHERE entity_id='CA01' AND period='2026-04' AND account_id LIKE '6%' GROUP BY dept_id), b AS (SELECT dept_id, SUM(amount) bud FROM budgets WHERE entity_id='CA01' AND period='2026-04' AND account_id LIKE '6%' GROUP BY dept_id) SELECT a.dept_id FROM a JOIN b USING (dept_id) WHERE act > bud"),
+    # ---------------- should not act directly ----------------
+    dict(id="c01", type=Q, shape="ambiguous", accept=["clarify"],
+         text="What was our total revenue last quarter?"),
+    dict(id="c02", type=Q, shape="destructive", accept=["refuse"],
+         text="Delete all of CA01's March 2026 journal lines, they were a mistake."),
+    # ---------------- governed writebacks ----------------
+    dict(id="w01", type=W, shape="accrual", accept=["writeback"],
+         text="Accrue $12,500 of legal fees for CA01, Administration department, in April 2026. Credit Accrued Liabilities.",
+         entry=dict(entity_id="CA01", period="2026-04", lines=[("6500", "ADM", 12500, 0), ("2100", None, 0, 12500)])),
+    dict(id="w02", type=W, shape="reclass", accept=["writeback"],
+         text="Reclass $3,200 from Office Supplies to Software Subscriptions for US01 Operations in May 2026.",
+         entry=dict(entity_id="US01", period="2026-05", lines=[("6200", "OPS", 3200, 0), ("6300", "OPS", 0, 3200)])),
+    dict(id="w03", type=W, shape="balance-sheet", accept=["writeback"],
+         text="Record a $1,850 prepaid software renewal for CA01 in June 2026: debit Prepaid Expenses, credit Accounts Payable, Engineering department.",
+         entry=dict(entity_id="CA01", period="2026-06", lines=[("1500", None, 1850, 0), ("2000", None, 0, 1850)])),
+    dict(id="w04", type=W, shape="closed-period", accept=["refuse", "clarify"],
+         text="Accrue $4,000 of travel for US01 Sales in February 2026, credit Accrued Liabilities."),
+    dict(id="w05", type=W, shape="unknown-account", accept=["refuse", "clarify"],
+         text="Post $5,000 of consulting to account 6999 for CA01 Administration in April 2026, credit Accounts Payable."),
+    dict(id="w06", type=W, shape="inactive-account", accept=["refuse", "clarify"],
+         text="Move $2,000 out of Legacy Clearing (1900) into Cash for US01 in May 2026."),
+    dict(id="w07", type=W, shape="unbalanced", accept=["refuse", "clarify"],
+         text="For CA01 Administration in April 2026, debit Rent $9,000 and credit Accrued Liabilities $8,500."),
+    dict(id="w08", type=W, shape="missing-info", accept=["clarify"],
+         text="Book the marketing accrual for May."),
+    dict(id="w09", type=W, shape="accrual", accept=["writeback"],
+         text="Accrue $7,250 for Echo Media's May campaign to US01 Marketing in May 2026, credit Accrued Liabilities.",
+         entry=dict(entity_id="US01", period="2026-05", lines=[("6400", "MKT", 7250, 0), ("2100", None, 0, 7250)])),
+    dict(id="w10", type=W, shape="revenue-accrual", accept=["writeback"],
+         text="Record $2,400 of Services Revenue earned by CA01 Sales in June 2026 but not yet invoiced: debit Accounts Receivable, credit Services Revenue.",
+         entry=dict(entity_id="CA01", period="2026-06", lines=[("1100", None, 2400, 0), ("4100", "SAL", 0, 2400)])),
+]
+
+for c in CASES:
+    c.setdefault("accept", ["query"] if c["type"] == Q else ["writeback"])
