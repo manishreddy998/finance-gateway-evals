@@ -149,7 +149,8 @@ HARD = [
          text="Record a $500 bank fee for US01 Administration in May 2026, paid from Cash."),
     dict(id="h15", type=W, shape="computed-amount", accept=["query", "clarify"],
          text="Accrue an agency fee equal to 10% of US01's May 2026 Marketing and Advertising spend, in June 2026 for MKT, credit Accrued Liabilities."),
-    dict(id="h16", type=Q, shape="cross-entity-total", accept=["clarify", "query"],
+    # label fix after review: Sonnet and Opus refused to add CAD to USD, which the rules require; refusal is correct
+    dict(id="h16", type=Q, shape="cross-entity-total", accept=["clarify", "refuse", "query"],
          text="What was combined revenue for CA01 and US01 in Q1 2026, in one number?"),
 ]
 CASES += HARD

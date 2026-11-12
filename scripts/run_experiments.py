@@ -32,6 +32,8 @@ CONFIGS = {
     "haiku_full_cache_r2": dict(model="claude-haiku-5-5", pruned=False, cache=True, run=2),
     "sonnet_full_cache": dict(model="claude-sonnet-5-5", pruned=False, cache=True),
     "opus_full_cache": dict(model="claude-opus-5-5", pruned=False, cache=True),
+    # routing policy: Haiku answers; a failed query is retried on Sonnet instead of on Haiku
+    "haiku_escalate_sonnet": dict(model="claude-haiku-5-5", pruned=False, cache=True, retry_model="claude-sonnet-5-5"),
 }
 OUT = ROOT / "results" / "actions.jsonl"
 T = tenants()
@@ -46,7 +48,8 @@ def run_case(name: str, cfg: dict, case: dict) -> dict:
         res = run_read(T["A"], action.get("sql"))
         if not res.ok:
             retry_msg = f"{case['text']}\n\nYour previous SQL failed:\n{action.get('sql')}\nError: {res.error}\nReturn a corrected action."
-            calls.append(llm.call(cfg["model"], system, retry_msg, cfg["cache"], run=cfg.get("run", 1)))
+            retry_model = cfg.get("retry_model", cfg["model"])
+            calls.append(llm.call(retry_model, system, retry_msg, cfg["cache"], run=cfg.get("run", 1)))
             action = calls[-1].action or action
     g = grade(case, action, T)
     return dict(config=name, **g, calls=len(calls), retried=len(calls) > 1,
