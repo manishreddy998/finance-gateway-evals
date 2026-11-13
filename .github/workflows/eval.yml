@@ -1,0 +1,29 @@
+name: eval
+
+# Every push and pull request: unit tests, then the full suite replayed from recorded model calls
+# (no API key, no cost), then the ship gate. A prompt, schema or case change that alters a request
+# misses the recording and fails here until it is re-run and reviewed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q tests
+      - name: Replay suite
+        env:
+          GATEWAY_CACHE: replay
+        run: python scripts/run_experiments.py --all
+      - name: Ship gate
+        run: python scripts/gate.py
+      - name: Summary
+        if: always()
+        run: python scripts/analyze.py > /dev/null && cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
